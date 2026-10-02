@@ -1,0 +1,42 @@
+#!/usr/bin/env fish
+
+set satellite "$HOME/.local/bin/xwayland-satellite-fl"
+set wine "$HOME/.local/wine-d2d1-dcomp-11.18/bin/wine"
+set display ":12"
+
+"$satellite" "$display" >"$HOME/.cache/xwayland-satellite-fl.log" 2>&1 &
+set satellite_pid $last_pid
+
+for i in (seq 1 100)
+    if test -S /tmp/.X11-unix/X12
+        break
+    end
+
+    if not kill -0 $satellite_pid 2>/dev/null
+        echo "xwayland-satellite-fl failed to start"
+        echo "Check ~/.cache/xwayland-satellite-fl.log"
+        exit 1
+    end
+
+    sleep 0.05
+end
+
+if not test -S /tmp/.X11-unix/X12
+    echo "Timed out waiting for Xwayland :12"
+    kill $satellite_pid 2>/dev/null
+    exit 1
+end
+
+env -u WAYLAND_DISPLAY \
+    -u WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS \
+    DISPLAY="$display" \
+    WINEPREFIX="$HOME/.wine" \
+    WINE_X11_BAKE_SHAPE_ALPHA=1 \
+    "$wine" 'C:\Program Files (x86)\Image-Line\FL Studio 20\FL64.exe'
+
+set wine_status $status
+
+kill $satellite_pid 2>/dev/null
+wait $satellite_pid 2>/dev/null
+
+exit $wine_status

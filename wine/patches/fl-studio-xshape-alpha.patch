@@ -1,0 +1,315 @@
+From d667880f8e4a8511ee5c7dd0ee5546783ae3a535 Mon Sep 17 00:00:00 2001
+From: rx-560 <89985473+rx-560@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 16:36:39 +0300
+Subject: [PATCH] winex11: integrate XShape alpha workaround
+
+---
+ dlls/winex11.drv/bitblt.c | 258 +++++++++++++++++++++++++-------------
+ 1 file changed, 173 insertions(+), 85 deletions(-)
+
+diff --git a/dlls/winex11.drv/bitblt.c b/dlls/winex11.drv/bitblt.c
+index b81182b0b6e..99702ddea79 100644
+--- a/dlls/winex11.drv/bitblt.c
++++ b/dlls/winex11.drv/bitblt.c
+@@ -1809,6 +1809,49 @@ static void x11drv_surface_set_clip( struct window_surface *window_surface, cons
+     }
+ }
+ 
++
++#ifdef HAVE_LIBXSHAPE
++static void x11drv_surface_bake_shape_alpha( XImage *ximage, const RECT *area,
++                                             const BITMAPINFO *shape_info,
++                                             const void *shape_bits )
++{
++    const BYTE *shape;
++    UINT32 *color;
++    UINT shape_stride, color_stride;
++    RECT clipped = *area;
++    int x, y;
++
++    if (!shape_bits || ximage->depth != 32 || ximage->bits_per_pixel != 32)
++        return;
++
++    clipped.left   = max( clipped.left, 0 );
++    clipped.top    = max( clipped.top, 0 );
++    clipped.right  = min( clipped.right, ximage->width );
++    clipped.bottom = min( clipped.bottom, ximage->height );
++
++    if (clipped.left >= clipped.right || clipped.top >= clipped.bottom)
++        return;
++
++    shape_stride = shape_info->bmiHeader.biSizeImage /
++    abs( shape_info->bmiHeader.biHeight );
++    color_stride = ximage->bytes_per_line / sizeof(*color);
++
++    color = (UINT32 *)ximage->data + clipped.top * color_stride;
++    shape = (const BYTE *)shape_bits + clipped.top * shape_stride;
++
++    for (y = clipped.top; y < clipped.bottom;
++         y++, color += color_stride, shape += shape_stride)
++         {
++             for (x = clipped.left; x < clipped.right; x++)
++             {
++                 if (!(shape[x / 8] & (1 << (7 - (x & 7)))))
++                     color[x] = 0;
++             }
++         }
++}
++#endif
++
++
+ /***********************************************************************
+  *           x11drv_surface_flush
+  */
+@@ -1821,6 +1864,26 @@ static BOOL x11drv_surface_flush( struct window_surface *window_surface, const R
+     XImage *ximage = surface->image->ximage;
+     const unsigned char *src = color_bits;
+     unsigned char *dst = (unsigned char *)ximage->data;
++    BOOL bake_shape_alpha = FALSE;
++    RECT update = *dirty;
++
++    #ifdef HAVE_LIBXSHAPE
++    bake_shape_alpha = getenv( "WINE_X11_BAKE_SHAPE_ALPHA" ) &&
++    ximage->depth == 32 &&
++    ximage->bits_per_pixel == 32;
++
++    /*
++     * A shape change can expose pixels that were zeroed by the previous
++     * shape, so restore and upload the complete image once.
++     */
++    if (bake_shape_alpha && shape_changed)
++    {
++        update.left = 0;
++        update.top = 0;
++        update.right = ximage->width;
++        update.bottom = ximage->height;
++    }
++    #endif
+ 
+     if (alpha_bits == -1)
+     {
+@@ -1844,102 +1907,124 @@ static BOOL x11drv_surface_flush( struct window_surface *window_surface, const R
+         int map[256], *mapping = get_window_surface_mapping( ximage->bits_per_pixel, map );
+         int width_bytes = ximage->bytes_per_line;
+ 
+-        src += dirty->top * width_bytes;
+-        dst += dirty->top * width_bytes;
+-        copy_image_byteswap( color_info, src, dst, width_bytes, width_bytes, dirty->bottom - dirty->top,
++        src += update.top * width_bytes;
++        dst += update.top * width_bytes;
++
++        copy_image_byteswap( color_info, src, dst,
++                             width_bytes, width_bytes,
++                             update.bottom - update.top,
+                              surface->byteswap, mapping, ~0u, alpha_bits );
+     }
+     else if (alpha_bits)
+     {
+         int x, y, stride = ximage->bytes_per_line / sizeof(ULONG);
+-        ULONG *ptr = (ULONG *)dst + dirty->top * stride;
++        ULONG *ptr = (ULONG *)dst + update.top * stride;
+ 
+-        for (y = dirty->top; y < dirty->bottom; y++, ptr += stride)
+-            for (x = dirty->left; x < dirty->right; x++)
++        for (y = update.top; y < update.bottom; y++, ptr += stride)
++            for (x = update.left; x < update.right; x++)
+                 ptr[x] |= alpha_bits;
+     }
+ 
+-
+-    if (!put_shm_image( ximage, &surface->image->shminfo, surface->window, surface->gc, rect, dirty ))
+-        XPutImage( gdi_display, surface->window, surface->gc, ximage, dirty->left,
+-                   dirty->top, rect->left + dirty->left, rect->top + dirty->top,
+-                   dirty->right - dirty->left, dirty->bottom - dirty->top );
+-
+-    /* The surface bitmap lives in the shared memory segment XShmPutImage reads
+-     * from, and the server only reads it when it gets to the request.  Anything
+-     * painted into the surface before then - typically a background erase that
+-     * follows a resize - is what the server puts on screen, not what was there
+-     * when the flush was issued.  Wait for the request to complete. */
+-    XSync( gdi_display, False );
+-
+-#ifdef HAVE_LIBXSHAPE
+-    {
+-        int kind = ShapeBounding;
+-
+-        /* A per-pixel-alpha surface on a 32-bit visual is composited with its
+-         * alpha by the window manager, so a bounding shape adds nothing to what
+-         * is shown.  Setting one on every change of the contour does harm: an
+-         * animated layered popup that resizes every frame (FL Studio's About
+-         * fruit) made KWin show a strip of it or nothing for single frames, 16
+-         * times in 36 test cycles against 0 without the bounding shape.  Keep
+-         * the mask as the input shape only, so that clicks on transparent pixels
+-         * still pass through, let it lag a running animation by up to a
+-         * second (the first mask and a removal go out at once),
+-         * and set it only after the image is in place: a shape change makes the
+-         * window manager repaint, and a repaint between the resize and the put
+-         * is exactly the frame that shows a strip. */
+-        if (alpha_mask && ximage->depth == 32)
+-        {
+-            DWORD now = NtGetTickCount();
+-
+-            kind = ShapeInput;
+-            if (shape_changed && shape_bits && surface->shape_kind == ShapeInput &&
+-                now - surface->input_shape_time < 1000)
++    #ifdef HAVE_LIBXSHAPE
++    if (bake_shape_alpha && shape_bits)
++        x11drv_surface_bake_shape_alpha( ximage, &update,
++                                         shape_info, shape_bits );
++        #endif
++
++        if (!put_shm_image( ximage, &surface->image->shminfo,
++            surface->window, surface->gc, rect, &update ))
++            XPutImage( gdi_display, surface->window, surface->gc, ximage,
++                       update.left, update.top,
++                       rect->left + update.left,
++                       rect->top + update.top,
++                       update.right - update.left,
++                       update.bottom - update.top );
++
++            /* The surface bitmap lives in the shared memory segment XShmPutImage reads
++             * from, and the server only reads it when it gets to the request.  Anything
++             * painted into the surface before then - typically a background erase that
++             * follows a resize - is what the server puts on screen, not what was there
++             * when the flush was issued.  Wait for the request to complete. */
++            XSync( gdi_display, False );
++
++            #ifdef HAVE_LIBXSHAPE
+             {
+-                surface->input_shape_pending = TRUE;
+-                shape_changed = FALSE;
+-            }
+-            else if (!shape_changed && surface->input_shape_pending && now - surface->input_shape_time >= 1000)
+-            {
+-                shape_changed = TRUE;
+-            }
+-            if (shape_changed && (NtUserGetWindowLongW( window_surface->hwnd, GWL_EXSTYLE ) & WS_EX_TRANSPARENT))
+-                shape_changed = FALSE;  /* sync_window_input_shape keeps such windows fully click-through */
+-        }
+-
+-        if (shape_changed)
+-        {
+-            /* the mask moves between the two kinds only with the visual; drop the old one */
+-            if (surface->shape_kind && surface->shape_kind != kind)
+-                XShapeCombineMask( gdi_display, surface->window, surface->shape_kind, 0, 0, None, ShapeSet );
++                int kind = ShapeBounding;
++
++                /* A per-pixel-alpha surface on a 32-bit visual is composited with its
++                 * alpha by the window manager, so a bounding shape adds nothing to what
++                 * is shown.  Setting one on every change of the contour does harm: an
++                 * animated layered popup that resizes every frame (FL Studio's About
++                 * fruit) made KWin show a strip of it or nothing for single frames, 16
++                 * times in 36 test cycles against 0 without the bounding shape.  Keep
++                 * the mask as the input shape only, so that clicks on transparent pixels
++                 * still pass through, let it lag a running animation by up to a
++                 * second (the first mask and a removal go out at once),
++                 * and set it only after the image is in place: a shape change makes the
++                 * window manager repaint, and a repaint between the resize and the put
++                 * is exactly the frame that shows a strip. */
++                if ((alpha_mask || bake_shape_alpha) && ximage->depth == 32)
++                {
++                    DWORD now = NtGetTickCount();
++
++                    kind = ShapeInput;
++                    if (shape_changed && shape_bits && surface->shape_kind == ShapeInput &&
++                        now - surface->input_shape_time < 1000)
++                    {
++                        surface->input_shape_pending = TRUE;
++                        shape_changed = FALSE;
++                    }
++                    else if (!shape_changed && surface->input_shape_pending &&
++                        now - surface->input_shape_time >= 1000)
++                    {
++                        shape_changed = TRUE;
++                    }
++
++                    if (shape_changed &&
++                        (NtUserGetWindowLongW( window_surface->hwnd, GWL_EXSTYLE ) &
++                        WS_EX_TRANSPARENT))
++                        shape_changed = FALSE;
++                }
+ 
+-            if (!shape_bits)
+-            {
+-                XShapeCombineMask( gdi_display, surface->window, kind, 0, 0, None, ShapeSet );
+-                surface->shape_kind = 0;
+-            }
+-            else
+-            {
+-                struct gdi_image_bits bits = {.ptr = (void *)shape_bits};
+-                XVisualInfo vis = default_visual;
+-                Pixmap shape;
+-
+-                vis.depth = 1;
+-                shape = create_pixmap_from_image( 0, &vis, shape_info, &bits, DIB_RGB_COLORS );
+-                XShapeCombineMask( gdi_display, surface->window, kind, 0, 0, shape, ShapeSet );
+-                XFreePixmap( gdi_display, shape );
+-                surface->shape_kind = kind;
+-            }
+-            if (kind == ShapeInput)
+-            {
+-                surface->input_shape_time = NtGetTickCount();
+-                surface->input_shape_pending = FALSE;
++                if (shape_changed)
++                {
++                    if (surface->shape_kind && surface->shape_kind != kind)
++                        XShapeCombineMask( gdi_display, surface->window,
++                                           surface->shape_kind, 0, 0, None, ShapeSet );
++
++                        if (!shape_bits)
++                        {
++                            XShapeCombineMask( gdi_display, surface->window,
++                                               kind, 0, 0, None, ShapeSet );
++                            surface->shape_kind = 0;
++                        }
++                        else
++                        {
++                            struct gdi_image_bits bits = {.ptr = (void *)shape_bits};
++                            XVisualInfo vis = default_visual;
++                            Pixmap shape;
++
++                            vis.depth = 1;
++                            shape = create_pixmap_from_image( 0, &vis, shape_info,
++                                                              &bits, DIB_RGB_COLORS );
++                            XShapeCombineMask( gdi_display, surface->window,
++                                               kind, 0, 0, shape, ShapeSet );
++                            XFreePixmap( gdi_display, shape );
++                            surface->shape_kind = kind;
++                        }
++
++                        if (kind == ShapeInput)
++                        {
++                            surface->input_shape_time = NtGetTickCount();
++                            surface->input_shape_pending = FALSE;
++                        }
++                }
+             }
+-        }
+-    }
+-#endif /* HAVE_LIBXSHAPE */
++            #endif /* HAVE_LIBXSHAPE */
+ 
+-    return TRUE;
++        XFlush( gdi_display );
++
++        return TRUE;
+ }
+ 
+ /***********************************************************************
+@@ -1992,8 +2077,11 @@ static struct window_surface *create_surface( HWND hwnd, Window window, const XV
+     if (!(image = x11drv_image_create( info, vis ))) return NULL;
+ 
+     /* wrap the XImage data in a HBITMAP if we can write to the surface pixels directly */
+-    if ((byteswap = image_needs_byteswap( image->ximage, is_r8g8b8( vis ), info->bmiHeader.biBitCount )) ||
+-        info->bmiHeader.biBitCount <= 8 || !(d3d_format = get_dib_d3dddifmt( info )))
++    byteswap = image_needs_byteswap( image->ximage, is_r8g8b8( vis ), info->bmiHeader.biBitCount );
++
++    if ((getenv( "WINE_X11_BAKE_SHAPE_ALPHA" ) && vis->depth == 32) ||
++        byteswap || info->bmiHeader.biBitCount <= 8 ||
++        !(d3d_format = get_dib_d3dddifmt( info )))
+         WARN( "Cannot use direct rendering, falling back to copies\n" );
+     else
+     {
+-- 
+2.55.0
+
