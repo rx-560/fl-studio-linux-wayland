@@ -1,0 +1,18 @@
+This repository contains files under multiple licenses.
+
+wine/patches/*
+    GNU Lesser General Public License v2.1 or later
+    See LICENSES/LGPL-2.1-or-later.txt
+
+xwayland-satellite/patches/*
+    Mozilla Public License 2.0
+    See LICENSES/MPL-2.0.txt
+
+README.md
+docs/*
+launcher/*
+    MIT License
+    See LICENSES/MIT.txt
+
+Upstream copyright remains with the respective Wine and
+xwayland-satellite authors.
