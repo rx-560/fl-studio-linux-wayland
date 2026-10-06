@@ -1,0 +1,36 @@
+From 454985e1987a9c34917e318b5c38f016099fba89 Mon Sep 17 00:00:00 2001
+From: rx-560 <89985473+rx-560@users.noreply.github.com>
+Date: Tue, 6 Oct 2026 15:51:58 +0300
+Subject: [PATCH] shell32: default folder views to modified date
+
+---
+ dlls/shell32/shlview.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/shell32/shlview.c b/dlls/shell32/shlview.c
+index f85c3526a3f..b100f190cf6 100644
+--- a/dlls/shell32/shlview.c
++++ b/dlls/shell32/shlview.c
+@@ -423,8 +423,8 @@ static BOOL ShellView_CreateList (IShellViewImpl * This)
+         SetPropW(This->hWndList, listview_orig_proc, orig_proc);
+ 
+         This->ListViewSortInfo.bIsAscending = TRUE;
+-        This->ListViewSortInfo.nHeaderID = -1;
+-        This->ListViewSortInfo.nLastHeaderID = -1;
++        This->ListViewSortInfo.nHeaderID = LISTVIEW_COLUMN_TIME;
++        This->ListViewSortInfo.nLastHeaderID = LISTVIEW_COLUMN_TIME;
+ 
+         if (This->FolderSettings.fFlags & FWF_DESKTOP) {
+           /*
+@@ -731,7 +731,7 @@ static HRESULT ShellView_FillList(IShellViewImpl *This)
+             ILFree(pidl);
+     }
+ 
+-    SendMessageW(This->hWndList, LVM_SORTITEMS, (WPARAM)This->pSFParent, (LPARAM)ShellView_CompareItems);
++    SendMessageW(This->hWndList, LVM_SORTITEMS, (WPARAM)&This->ListViewSortInfo, (LPARAM)ShellView_ListViewCompareItems);
+ 
+     IFolderView2_SetRedraw(folderview, TRUE);
+ 
+-- 
+2.55.0
+
