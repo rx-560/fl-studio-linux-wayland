@@ -2,6 +2,8 @@
 
 Personal compatibility stack for running FL Studio 20 under Wine on Wayland.
 
+Detailed install instructions are in `/docs/setup.md`.
+
 Current stack:
 
 - Wine 11.18 based on giang17's D2D/DComp work
