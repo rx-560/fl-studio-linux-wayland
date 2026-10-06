@@ -10,6 +10,7 @@ Current stack:
 - FL Studio dialog-as-toplevel patch
 - Microsoft Edge WebView2 for plugins such as Cymatics Corrosion and Dark Sky
 - FL Studio "Detach All Plugins" enabled to avoid embedded plugin rendering corruption
+- Wine shell32 patch to default file dialogs to Modified, newest-first sorting
 
 ## Fixes
 
@@ -21,6 +22,7 @@ Current stack:
 | Corrosion / Dark Sky black UI | WebView2 runtime |
 | Embedded Serum movement corruption | Enable "Detach All Plugins" |
 | WebView2 causing terrible frame pacing | Do not force `--disable-gpu` |
+| Wine file dialogs reopening sorted by name | shell32 default-sort patch (Modified, newest first)
 
 ## Wine base
 
