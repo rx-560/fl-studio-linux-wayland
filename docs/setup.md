@@ -47,6 +47,7 @@ git clone https://github.com/rx-560/fl-studio-linux-wayland.git
 ```
 
 ## 3. Build patched Wine
+
 Clone giang17's Wine fork:
 
 ```fish
@@ -63,10 +64,18 @@ git reset --hard a05cc9f2603462e8d43f5e5de05e5d4ef853e1ff
 
 Apply the FL Studio XShape/alpha patch:
 
-```fish
-git am \
-    ~/src/fl-studio-linux-wayland/wine/patches/fl-studio-xshape-alpha.patch
-```
+    git am \
+        ~/src/fl-studio-linux-wayland/wine/patches/fl-studio-xshape-alpha.patch
+
+**Optional:** Apply the file-dialog date-sorting patch:
+
+    git am \
+        ~/src/fl-studio-linux-wayland/wine/patches/0003-shell32-default-folder-views-to-modified-date.patch
+
+> **About this patch:** This changes Wine shell folder views to default to **Modified, newest first**.
+> It is a quality-of-life patch rather than a compatibility requirement.
+> This affects all shell folder views in this patched Wine build.
+
 
 ### Build 64-bit Wine
 
@@ -199,7 +208,31 @@ The launcher deliberately sets:
 WINE_X11_BAKE_SHAPE_ALPHA=1
 ```
 only for FL Studio.
-Do not set this variable globally.
+Do not set this variable globally unless you intentionally want the workaround
+to affect other Wine applications as well.
+
+### Optional: use the launcher from your desktop/app launcher
+
+If Wine created an FL Studio desktop entry during installation, change its
+`Exec=` line to use the launcher installed above.
+
+The desktop entry is normally located at:
+
+    ~/.local/share/applications/wine/Programs/Image-Line/FL Studio 20.desktop
+
+Set:
+
+    Exec=/home/YOUR_USER/.local/bin/flstudio
+
+For example, with `$HOME` expanded automatically:
+
+```fish
+set desktop_file "$HOME/.local/share/applications/wine/Programs/Image-Line/FL Studio 20.desktop"
+
+sed -i \
+    "s|^Exec=.*|Exec=$HOME/.local/bin/flstudio|" \
+    "$desktop_file"
+```
 
 ## 7. FL Studio setting
 
@@ -211,6 +244,9 @@ Detach all plugins
 This avoids corruption seen when some plugin UIs are embedded inside
 FL Studio's main window.
 
+However, FL Studio's drag-and-drop functionality does not work correctly with
+detached plugins (atleast in niri). You can therefore either enable `Detach all plugins` globally,
+or enable detaching individually for plugins that benefit from it.
 
 
 ## What each fix does
@@ -219,18 +255,19 @@ FL Studio's main window.
 | Black corners around FL fruit/About window | Wine XShape-to-alpha patch |
 | Settings window geometry/input desync | xwayland-satellite PR500 + dialog patch |
 | SerumFX crash when enabling effects | giang17 D2D/DComp Wine |
-| Corrosion / Dark Sky black UI | Microsoft Edge WebView2 |
+| Plugins using WebView2 having black UI | Install Microsoft Edge WebView2 in the wine prefix |
 | Embedded Serum rendering corruption | Detach all plugins |
 | Very poor frame pacing with WebView2 | Do not force `--disable-gpu` |
+| Wine file dialogs open sorted by name | Optional shell32 default-sort patch (Modified, newest first) |
+
 
 ## Known issues
 
 WebView2-based plugins can use a significant amount of CPU.
 
-Corrosion can occasionally flicker or show stale/white areas until its
+They can also occasionally flicker or show stale/white areas until their
 UI is invalidated by interacting with a control.
 
-Do not force WebView2 to use `--disable-gpu`; in testing this caused
-very poor overall FL Studio frame pacing despite FL reporting a high
-GUI frame rate.
-
+Do not force WebView2 to use `--disable-gpu` in an attempt to fix graphical
+glitches. In testing, this caused very poor overall FL Studio frame pacing
+despite FL Studio reporting a high GUI frame rate.
